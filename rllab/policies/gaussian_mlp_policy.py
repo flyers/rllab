@@ -154,6 +154,8 @@ class GaussianMLPPolicy(StochasticPolicy, LasagnePowered, Serializable):
     def log_diagnostics(self, paths):
         log_stds = np.vstack([path["agent_infos"]["log_std"] for path in paths])
         logger.record_tabular('AveragePolicyStd', np.mean(np.exp(log_stds)))
+        means = np.vstack([path["agent_infos"]["mean"] for path in paths])
+        logger.record_tabular('AveragePolicyMean', np.mean(means))
 
     @property
     def distribution(self):
