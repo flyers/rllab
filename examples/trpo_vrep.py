@@ -26,11 +26,11 @@ algo = TRPO(
     policy=policy,
     baseline=baseline,
     # batch_size=4000,
-    batch_size=500,
+    batch_size=1000,
     max_path_length=env.horizon,
     n_itr=500,
     discount=0.99,
-    step_size=0.01,
+    step_size=0.0025,
     # Uncomment both lines (this and the plot parameter below) to enable plotting
     # plot=True,
 )
