@@ -2,6 +2,7 @@ from rllab.algos.base import RLAlgorithm
 from rllab.misc.overrides import overrides
 from rllab.misc import special
 from rllab.misc import ext
+from rllab.misc import tensor_utils
 from rllab.sampler import parallel_sampler
 from rllab.plotter import plotter
 from functools import partial
@@ -11,6 +12,42 @@ import cPickle as pickle
 import numpy as np
 import pyprind
 import lasagne
+
+def rollout(env, agent, max_path_length, eval_samples):
+    count = 0
+    results = []
+    while count < eval_samples:
+        observations = []
+        actions = []
+        rewards = []
+        agent_infos = []
+        env_infos = []
+        o = env.reset()
+        agent.reset()
+        path_length = 0
+        while path_length < max_path_length:
+            a, agent_info = agent.get_action(o)
+            a = env.choose_action(-1, np.zeros(4), a)
+            next_o, r, d, env_info = env.step(a)
+            observations.append(env.observation_space.flatten(o))
+            rewards.append(r)
+            actions.append(env.action_space.flatten(a))
+            agent_infos.append(agent_info)
+            env_infos.append(env_info)
+            path_length += 1
+            if d:
+                break
+            o = next_o
+        result = dict(
+            observations=tensor_utils.stack_tensor_list(observations),
+            actions=tensor_utils.stack_tensor_list(actions),
+            rewards=tensor_utils.stack_tensor_list(rewards),
+            agent_infos=tensor_utils.stack_tensor_dict_list(agent_infos),
+            env_infos=tensor_utils.stack_tensor_dict_list(env_infos),
+        )
+        results.append(result)
+        count += path_length
+    return results
 
 
 def parse_update_method(update_method, **kwargs):
@@ -102,13 +139,9 @@ class DDPG(RLAlgorithm):
             qf_weight_decay=0.,
             qf_update_method='adam',
             qf_learning_rate=1e-3,
-            qf_lr_decay=0.0,
-            qf_lr_min=1e-5,
             policy_weight_decay=0,
             policy_update_method='adam',
             policy_learning_rate=1e-3,
-            policy_lr_decay=0.0,
-            policy_lr_min=1e-5,
             eval_samples=10000,
             soft_target=True,
             soft_target_tau=0.001,
@@ -116,7 +149,10 @@ class DDPG(RLAlgorithm):
             scale_reward=1.0,
             include_horizon_terminal_transitions=False,
             plot=False,
-            pause_for_plot=False):
+            pause_for_plot=False,
+            exploration_eps=0.9,
+            eps_decay = 0,
+    ):
         """
         :param env: Environment
         :param policy: Policy
@@ -157,26 +193,19 @@ class DDPG(RLAlgorithm):
         self.discount = discount
         self.max_path_length = max_path_length
         self.qf_weight_decay = qf_weight_decay
-        self.qf_optimizer = qf_update_method
-        self.qf_lr = qf_learning_rate
-        self.qf_lr_decay = qf_lr_decay
-        self.qf_lr_min = qf_lr_min
-        # self.qf_update_method = \
-        #     parse_update_method(
-        #         qf_update_method,
-        #         learning_rate=qf_learning_rate,
-        #     )
-        # self.qf_learning_rate = qf_learning_rate
+        self.qf_update_method = \
+            parse_update_method(
+                qf_update_method,
+                learning_rate=qf_learning_rate,
+            )
+        self.qf_learning_rate = qf_learning_rate
         self.policy_weight_decay = policy_weight_decay
-        self.policy_optimizer = policy_update_method
-        # self.policy_update_method = \
-        #     parse_update_method(
-        #         policy_update_method,
-        #         learning_rate=policy_learning_rate,
-        #     )
-        self.policy_lr = policy_learning_rate
-        self.policy_lr_decay = policy_lr_decay
-        self.policy_lr_min = policy_lr_min
+        self.policy_update_method = \
+            parse_update_method(
+                policy_update_method,
+                learning_rate=policy_learning_rate,
+            )
+        self.policy_learning_rate = policy_learning_rate
         self.eval_samples = eval_samples
         self.soft_target_tau = soft_target_tau
         self.n_updates_per_sample = n_updates_per_sample
@@ -195,6 +224,9 @@ class DDPG(RLAlgorithm):
         self.scale_reward = scale_reward
 
         self.opt_info = None
+
+        self.exploration_eps = exploration_eps
+        self.eps_decay = eps_decay
 
     def start_worker(self):
         parallel_sampler.populate_task(self.env, self.policy)
@@ -220,6 +252,10 @@ class DDPG(RLAlgorithm):
 
         sample_policy = pickle.loads(pickle.dumps(self.policy))
 
+        eps_curr = self.exploration_eps
+        eps_min = 0.
+        eps_decay = self.eps_decay
+
         for epoch in xrange(self.n_epochs):
             logger.push_prefix('epoch #%d | ' % epoch)
             logger.log("Training started")
@@ -235,9 +271,14 @@ class DDPG(RLAlgorithm):
                     self.es_path_returns.append(path_return)
                     path_length = 0
                     path_return = 0
-                action = self.es.get_action(observation, policy=sample_policy)  # qf=qf)
 
-                next_observation, reward, terminal, _ = self.env.step(action)
+                policy_action, _ = sample_policy.get_action(observation)
+                pid_action = np.random.randn(4) * 0.015
+                motor_action = self.env.choose_action(eps_curr, pid_action, policy_action)
+                eps_curr = max(eps_min, eps_curr - eps_decay)
+                action = self.es.get_noise_action(motor_action)
+
+                next_observation, reward, terminal, info = self.env.step(action)
                 path_length += 1
                 path_return += reward
 
@@ -265,9 +306,9 @@ class DDPG(RLAlgorithm):
                         # Train policy
                         batch = pool.random_batch(self.batch_size)
                         self.do_training(itr, batch)
-                        itr += 1
                     sample_policy.set_param_values(self.policy.get_param_values())
 
+                itr += 1
 
             logger.log("Training finished")
             if pool.size >= self.min_pool_size:
@@ -326,25 +367,19 @@ class DDPG(RLAlgorithm):
 
         policy_reg_surr = policy_surr + policy_weight_decay_term
 
-        qf_lr = TT.scalar(name='qf_lr')
-        policy_lr = TT.scalar(name='policy_lr')
-        qf_updates = lasagne.updates.adam(
-            qf_reg_loss, self.qf.get_params(trainable=True), qf_lr)
-        # qf_updates = self.qf_update_method(
-        #     qf_reg_loss, self.qf.get_params(trainable=True))
-        policy_updates = lasagne.updates.adam(
-            policy_reg_surr, self.policy.get_params(trainable=True), policy_lr)
-        # policy_updates = self.policy_update_method(
-        #     policy_reg_surr, self.policy.get_params(trainable=True))
+        qf_updates = self.qf_update_method(
+            qf_reg_loss, self.qf.get_params(trainable=True))
+        policy_updates = self.policy_update_method(
+            policy_reg_surr, self.policy.get_params(trainable=True))
 
         f_train_qf = ext.compile_function(
-            inputs=[yvar, obs, action, qf_lr],
+            inputs=[yvar, obs, action],
             outputs=[qf_loss, qval],
             updates=qf_updates
         )
 
         f_train_policy = ext.compile_function(
-            inputs=[obs, policy_lr],
+            inputs=[obs],
             outputs=policy_surr,
             updates=policy_updates
         )
@@ -376,13 +411,9 @@ class DDPG(RLAlgorithm):
         f_train_qf = self.opt_info["f_train_qf"]
         f_train_policy = self.opt_info["f_train_policy"]
 
-        qf_lr = self.qf_lr * (1. / (1. + itr * self.qf_lr_decay))
-        qf_lr = max(qf_lr, self.qf_lr_min)
-        qf_loss, qval = f_train_qf(ys, obs, actions, qf_lr)
+        qf_loss, qval = f_train_qf(ys, obs, actions)
 
-        policy_lr = self.policy_lr * (1. / (1. + itr * self.policy_lr_decay))
-        policy_lr = max(policy_lr, self.policy_lr_min)
-        policy_surr = f_train_policy(obs, policy_lr)
+        policy_surr = f_train_policy(obs)
 
         target_policy.set_param_values(
             target_policy.get_param_values() * (1.0 - self.soft_target_tau) +
@@ -398,11 +429,12 @@ class DDPG(RLAlgorithm):
 
     def evaluate(self, epoch, pool):
         logger.log("Collecting samples for evaluation")
-        paths = parallel_sampler.sample_paths(
-            policy_params=self.policy.get_param_values(),
-            max_samples=self.eval_samples,
-            max_path_length=self.max_path_length,
-        )
+        paths = rollout(self.env, self.policy, self.max_path_length, self.eval_samples)
+        # paths = parallel_sampler.sample_paths(
+        #     policy_params=self.policy.get_param_values(),
+        #     max_samples=self.eval_samples,
+        #     max_path_length=self.max_path_length,
+        # )
 
         average_discounted_return = np.mean(
             [special.discount_return(path["rewards"], self.discount) for path in paths]

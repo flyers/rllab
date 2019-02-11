@@ -296,3 +296,34 @@ def batch_norm(layer, **kwargs):
     if nonlinearity is not None:
         layer = L.NonlinearityLayer(layer, nonlinearity)
     return layer
+
+
+class WeightLayer(L.Layer):
+
+    def __init__(self, incoming, W, num_units, **kwargs):
+
+        super(WeightLayer, self).__init__(incoming, **kwargs)
+
+        assert len(self.input_shape) == 2
+
+        num_inputs = self.input_shape[1]
+        self.num_units = num_units
+        self.W = self.add_param(W, (num_inputs, num_units), name="W", trainable=False, regularizable=False)
+
+    def get_output_for(self, input, **kwargs):
+
+        return TT.dot(input, self.W)
+
+    def get_output_shape_for(self, input_shape):
+
+        return (input_shape[0], self.num_units)
+
+
+def SpatialSoftmaxLayer(l_in):
+    # spatial softmax layer
+    assert len(l_in.output_shape) == 4
+    _, channels, rows, cols = l_in.output_shape
+    l_out = L.ReshapeLayer(l_in, (-1, rows * cols))
+    l_out = L.NonlinearityLayer(l_out, nonlinearity=lasagne.nonlinearities.softmax)
+    l_out = L.ReshapeLayer(l_out, (-1, channels, rows, cols))
+    return l_out

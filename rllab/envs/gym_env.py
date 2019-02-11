@@ -6,6 +6,7 @@ import gym.envs
 import gym.spaces
 from gym.monitoring import monitor
 import os
+import numpy as np
 import os.path as osp
 from rllab.envs.base import Env, Step
 from rllab.core.serializable import Serializable
@@ -13,6 +14,12 @@ from rllab.spaces.box import Box
 from rllab.spaces.discrete import Discrete
 from rllab.misc import logger
 import logging
+from gym.envs.vrep.vrep_simple_env import VREPSimpleEnv
+from gym.envs.vrep.vrep_thrust_env import VREPThrustEnv
+from gym.envs.vrep.vrep_mix_env import VREPMixEnv
+from gym.envs.vrep.vrep_hierarchy_env import VREPHierarchyEnv
+from gym.envs.vrep.vrep_hierarchy_target_env import VREPHierarchyTargetEnv
+from gym.envs.vrep.vrep_motor_target_env import VREPMotorTargetEnv
 
 
 def convert_gym_space(space):
@@ -109,3 +116,250 @@ class GymEnv(Env, Serializable):
 
     ***************************
                 """ % self._log_dir)
+
+
+class RLVREPSimpleEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPSimpleEnv(**kwargs)
+        self.env = env
+
+        self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
+
+class RLVREPMixEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPMixEnv(**kwargs)
+        self.env = env
+
+        self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
+    def choose_action(self, prob, pid_action, policy_action):
+        return self.env._choose_action(prob, pid_action, policy_action)
+
+class RLVREPHierarchyEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPHierarchyEnv(**kwargs)
+        self.env = env
+
+        self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
+class RLVREPHierarchyTargetEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPHierarchyTargetEnv(**kwargs)
+        self.env = env
+
+        if env._obs_type == "image":
+            self._observation_space = {}
+            self._observation_space["image"] = convert_gym_space(env.observation_space)
+            self._observation_space["state"] = convert_gym_space(env.observation_state_space)
+        else:
+            self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        obs = self.env.reset()
+        if self.env._obs_type == "image":
+            return {'image': obs['obs_img'], 'state': obs['obs_state']}
+        else:
+            return obs
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        if self.env._obs_type == "image":
+            next_obs_dict = {'image': next_obs, 'state': info['obs_state']}
+            return Step(next_obs_dict, reward, done, **info)
+        else:
+            return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
+class RLVREPMotorTargetEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPMotorTargetEnv(**kwargs)
+        self.env = env
+
+        if env._obs_type == "image":
+            self._observation_space = {}
+            self._observation_space["image"] = convert_gym_space(env.observation_space)
+            self._observation_space["state"] = convert_gym_space(env.observation_state_space)
+        else:
+            self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        obs = self.env.reset()
+        if self.env._obs_type == "image":
+            return {'image': obs['obs_img'], 'state': obs['obs_state']}
+        else:
+            return obs
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        if self.env._obs_type == "image":
+            next_obs_dict = {'image': next_obs, 'state': info['obs_state']}
+            return Step(next_obs_dict, reward, done, **info)
+        else:
+            return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
+class RLVREPThrustEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPThrustEnv(**kwargs)
+        self.env = env
+
+        self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        return self.env.reset()
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass

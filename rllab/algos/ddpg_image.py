@@ -11,6 +11,7 @@ import cPickle as pickle
 import numpy as np
 import pyprind
 import lasagne
+import theano
 
 
 def parse_update_method(update_method, **kwargs):
@@ -24,15 +25,20 @@ def parse_update_method(update_method, **kwargs):
 
 class SimpleReplayPool(object):
     def __init__(
-            self, max_pool_size, observation_dim, action_dim):
+            self, max_pool_size, observation_dim, action_dim, state_dim):
         self._observation_dim = observation_dim
         self._action_dim = action_dim
+        self._state_dim = state_dim
         self._max_pool_size = max_pool_size
         self._observations = np.zeros(
-            (max_pool_size, observation_dim),
+            (max_pool_size,) + observation_dim,
+            dtype="uint8"
         )
         self._actions = np.zeros(
             (max_pool_size, action_dim),
+        )
+        self._states = np.zeros(
+            (max_pool_size,) + state_dim
         )
         self._rewards = np.zeros(max_pool_size)
         self._terminals = np.zeros(max_pool_size, dtype='uint8')
@@ -40,11 +46,12 @@ class SimpleReplayPool(object):
         self._top = 0
         self._size = 0
 
-    def add_sample(self, observation, action, reward, terminal):
+    def add_sample(self, observation, action, reward, terminal, state):
         self._observations[self._top] = observation
         self._actions[self._top] = action
         self._rewards[self._top] = reward
         self._terminals[self._top] = terminal
+        self._states[self._top] = state
         self._top = (self._top + 1) % self._max_pool_size
         if self._size >= self._max_pool_size:
             self._bottom = (self._bottom + 1) % self._max_pool_size
@@ -70,10 +77,12 @@ class SimpleReplayPool(object):
             count += 1
         return dict(
             observations=self._observations[indices],
+            states=self._states[indices],
             actions=self._actions[indices],
             rewards=self._rewards[indices],
             terminals=self._terminals[indices],
-            next_observations=self._observations[transition_indices]
+            next_observations=self._observations[transition_indices],
+            next_states=self._states[transition_indices]
         )
 
     @property
@@ -110,11 +119,14 @@ class DDPG(RLAlgorithm):
             policy_lr_decay=0.0,
             policy_lr_min=1e-5,
             eval_samples=10000,
+            target_qf=None,
+            target_policy=None,
             soft_target=True,
             soft_target_tau=0.001,
             n_updates_per_sample=1,
             scale_reward=1.0,
             include_horizon_terminal_transitions=False,
+            update_interval=5,
             plot=False,
             pause_for_plot=False):
         """
@@ -157,26 +169,25 @@ class DDPG(RLAlgorithm):
         self.discount = discount
         self.max_path_length = max_path_length
         self.qf_weight_decay = qf_weight_decay
-        self.qf_optimizer = qf_update_method
-        self.qf_lr = qf_learning_rate
-        self.qf_lr_decay = qf_lr_decay
-        self.qf_lr_min = qf_lr_min
         # self.qf_update_method = \
         #     parse_update_method(
         #         qf_update_method,
         #         learning_rate=qf_learning_rate,
         #     )
         # self.qf_learning_rate = qf_learning_rate
+        self.qf_optimizer = qf_update_method
+        self.qf_lr = qf_learning_rate
+        self.qf_lr_decay = qf_lr_decay
+        self.qf_lr_min = qf_lr_min
         self.policy_weight_decay = policy_weight_decay
+
         self.policy_optimizer = policy_update_method
-        # self.policy_update_method = \
-        #     parse_update_method(
-        #         policy_update_method,
-        #         learning_rate=policy_learning_rate,
-        #     )
         self.policy_lr = policy_learning_rate
         self.policy_lr_decay = policy_lr_decay
         self.policy_lr_min = policy_lr_min
+        self.target_qf = target_qf
+        self.target_policy = target_policy
+        
         self.eval_samples = eval_samples
         self.soft_target_tau = soft_target_tau
         self.n_updates_per_sample = n_updates_per_sample
@@ -193,6 +204,7 @@ class DDPG(RLAlgorithm):
         self.paths_samples_cnt = 0
 
         self.scale_reward = scale_reward
+        self.update_interval = update_interval
 
         self.opt_info = None
 
@@ -206,8 +218,9 @@ class DDPG(RLAlgorithm):
         # This seems like a rather sequential method
         pool = SimpleReplayPool(
             max_pool_size=self.replay_pool_size,
-            observation_dim=self.env.observation_space.flat_dim,
+            observation_dim=self.env.observation_space['image'].shape,
             action_dim=self.env.action_space.flat_dim,
+            state_dim=self.env.observation_space['state'].shape
         )
         self.start_worker()
 
@@ -220,6 +233,7 @@ class DDPG(RLAlgorithm):
 
         sample_policy = pickle.loads(pickle.dumps(self.policy))
 
+        total_steps = 0
         for epoch in xrange(self.n_epochs):
             logger.push_prefix('epoch #%d | ' % epoch)
             logger.log("Training started")
@@ -240,27 +254,30 @@ class DDPG(RLAlgorithm):
                 next_observation, reward, terminal, _ = self.env.step(action)
                 path_length += 1
                 path_return += reward
+                total_steps += 1
 
                 if not terminal and path_length >= self.max_path_length:
                     terminal = True
                     # only include the terminal transition in this case if the flag was set
                     if self.include_horizon_terminal_transitions:
                         pool.add_sample(
-                            self.env.observation_space.flatten(observation),
-                            self.env.action_space.flatten(action),
+                            observation['image'],
+                            action,
                             reward * self.scale_reward,
-                            terminal
+                            terminal,
+                            observation['state']
                         )
                 else:
                     pool.add_sample(
-                        self.env.observation_space.flatten(observation),
-                        self.env.action_space.flatten(action),
+                        observation['image'],
+                        action,
                         reward * self.scale_reward,
-                        terminal
+                        terminal,
+                        observation['state']
                     )
                 observation = next_observation
 
-                if pool.size >= self.min_pool_size:
+                if pool.size >= self.min_pool_size and total_steps % self.update_interval == 0:
                     for update_itr in xrange(self.n_updates_per_sample):
                         # Train policy
                         batch = pool.random_batch(self.batch_size)
@@ -289,14 +306,31 @@ class DDPG(RLAlgorithm):
     def init_opt(self):
 
         # First, create "target" policy and Q functions
-        target_policy = pickle.loads(pickle.dumps(self.policy))
-        target_qf = pickle.loads(pickle.dumps(self.qf))
+        if self.target_policy is None:
+            target_policy = pickle.loads(pickle.dumps(self.policy))
+        else:
+            target_policy = self.target_policy
+        if self.target_qf is None:
+            target_qf = pickle.loads(pickle.dumps(self.qf))
+        else:
+            target_qf = self.target_qf
 
         # y need to be computed first
-        obs = self.env.observation_space.new_tensor_variable(
-            'obs',
-            extra_dims=1,
+        # obs = self.env.observation_space.new_tensor_variable(
+        #     'obs',
+        #     extra_dims=1,
+        # )
+        img_obs = ext.new_tensor(
+            name='img_obs',
+            ndim=4,
+            dtype=theano.config.floatX
         )
+        state_obs = ext.new_tensor(
+            name='state_obs',
+            ndim=2,
+            dtype=theano.config.floatX
+        )
+        obs_dict = {'image': img_obs, 'state': state_obs}
 
         # The yi values are computed separately as above and then passed to
         # the training functions below
@@ -310,7 +344,7 @@ class DDPG(RLAlgorithm):
                                sum([TT.sum(TT.square(param)) for param in
                                     self.qf.get_params(regularizable=True)])
 
-        qval = self.qf.get_qval_sym(obs, action)
+        qval = self.qf.get_qval_sym(obs_dict, action)
 
         qf_loss = TT.mean(TT.square(yvar - qval))
         qf_reg_loss = qf_loss + qf_weight_decay_term
@@ -319,7 +353,8 @@ class DDPG(RLAlgorithm):
                                    sum([TT.sum(TT.square(param))
                                         for param in self.policy.get_params(regularizable=True)])
         policy_qval = self.qf.get_qval_sym(
-            obs, self.policy.get_action_sym(obs),
+            obs_dict,
+            self.policy.get_action_sym(obs_dict),
             deterministic=True
         )
         policy_surr = -TT.mean(policy_qval)
@@ -338,13 +373,13 @@ class DDPG(RLAlgorithm):
         #     policy_reg_surr, self.policy.get_params(trainable=True))
 
         f_train_qf = ext.compile_function(
-            inputs=[yvar, obs, action, qf_lr],
+            inputs=[yvar, img_obs, state_obs, action, qf_lr],
             outputs=[qf_loss, qval],
             updates=qf_updates
         )
 
         f_train_policy = ext.compile_function(
-            inputs=[obs, policy_lr],
+            inputs=[img_obs, state_obs, policy_lr],
             outputs=policy_surr,
             updates=policy_updates
         )
@@ -358,18 +393,19 @@ class DDPG(RLAlgorithm):
 
     def do_training(self, itr, batch):
 
-        obs, actions, rewards, next_obs, terminals = ext.extract(
+        obs, states, actions, rewards, next_obs, next_states, terminals = ext.extract(
             batch,
-            "observations", "actions", "rewards", "next_observations",
-            "terminals"
+            "observations", "states", "actions", "rewards", "next_observations",
+            "next_states", "terminals"
         )
+        next_obs_dict = {'image': next_obs, 'state':next_states}
 
         # compute the on-policy y values
         target_qf = self.opt_info["target_qf"]
         target_policy = self.opt_info["target_policy"]
 
-        next_actions, _ = target_policy.get_actions(next_obs)
-        next_qvals = target_qf.get_qval(next_obs, next_actions)
+        next_actions, _ = target_policy.get_actions(next_obs_dict)
+        next_qvals = target_qf.get_qval(next_obs_dict, next_actions)
 
         ys = rewards + (1. - terminals) * self.discount * next_qvals
 
@@ -378,11 +414,11 @@ class DDPG(RLAlgorithm):
 
         qf_lr = self.qf_lr * (1. / (1. + itr * self.qf_lr_decay))
         qf_lr = max(qf_lr, self.qf_lr_min)
-        qf_loss, qval = f_train_qf(ys, obs, actions, qf_lr)
+        qf_loss, qval = f_train_qf(ys, obs, states, actions, qf_lr)
 
         policy_lr = self.policy_lr * (1. / (1. + itr * self.policy_lr_decay))
         policy_lr = max(policy_lr, self.policy_lr_min)
-        policy_surr = f_train_policy(obs, policy_lr)
+        policy_surr = f_train_policy(obs, states, policy_lr)
 
         target_policy.set_param_values(
             target_policy.get_param_values() * (1.0 - self.soft_target_tau) +

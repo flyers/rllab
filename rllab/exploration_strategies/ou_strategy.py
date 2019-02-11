@@ -47,8 +47,12 @@ class OUStrategy(ExplorationStrategy, Serializable):
         return self.state
 
     @overrides
-    def get_action(self, t, observation, policy, **kwargs):
+    def get_action(self, observation, policy, **kwargs):
         action, _ = policy.get_action(observation)
+        ou_state = self.evolve_state()
+        return np.clip(action + ou_state, self.action_space.low, self.action_space.high)
+
+    def get_noise_action(self, action):
         ou_state = self.evolve_state()
         return np.clip(action + ou_state, self.action_space.low, self.action_space.high)
 
