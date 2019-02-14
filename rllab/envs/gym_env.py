@@ -16,7 +16,6 @@ from rllab.misc import logger
 import logging
 from gym.envs.vrep.vrep_simple_env import VREPSimpleEnv
 from gym.envs.vrep.vrep_thrust_env import VREPThrustEnv
-from gym.envs.vrep.vrep_mix_env import VREPMixEnv
 from gym.envs.vrep.vrep_hierarchy_env import VREPHierarchyEnv
 from gym.envs.vrep.vrep_hierarchy_target_env import VREPHierarchyTargetEnv
 from gym.envs.vrep.vrep_motor_target_env import VREPMotorTargetEnv
