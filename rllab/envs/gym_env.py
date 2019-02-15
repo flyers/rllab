@@ -19,6 +19,7 @@ from gym.envs.vrep.vrep_thrust_env import VREPThrustEnv
 from gym.envs.vrep.vrep_hierarchy_env import VREPHierarchyEnv
 from gym.envs.vrep.vrep_hierarchy_target_env import VREPHierarchyTargetEnv
 from gym.envs.vrep.vrep_motor_target_env import VREPMotorTargetEnv
+from gym.envs.vrep.vrep_env import VREPEnv
 
 
 def convert_gym_space(space):
@@ -362,3 +363,43 @@ class RLVREPThrustEnv(Env, Serializable):
 
     def terminate(self):
         pass
+
+class RLVREPEnv(Env, Serializable):
+    def __init__(self, **kwargs):
+        Serializable.quick_init(self, locals())
+
+        env = VREPEnv(**kwargs)
+        self.env = env
+
+        assert env._obs_type == "state"
+
+        self._observation_space = convert_gym_space(env.observation_space)
+        self._action_space = convert_gym_space(env.action_space)
+        self._horizon = env.timestep_limit
+
+    @property
+    def observation_space(self):
+        return self._observation_space
+
+    @property
+    def action_space(self):
+        return self._action_space
+
+    @property
+    def horizon(self):
+        return self._horizon
+
+    def reset(self):
+        obs = self.env.reset()
+        return obs
+
+    def step(self, action):
+        next_obs, reward, done, info = self.env.step(action)
+        return Step(next_obs, reward, done, **info)
+
+    def render(self):
+        pass
+
+    def terminate(self):
+        pass
+
